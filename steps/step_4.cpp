@@ -10,16 +10,12 @@ RTC_DS3231 rtc;
 String inputString = "";      // String to store incoming serial data
 boolean stringComplete = false;  // Flag for completed string
 
-void printTime(); // Function prototype
+void printTime();
 
 void setup () {
-  Serial.begin(57600);
+  Serial.begin(115200);
 
-#ifndef ESP8266
-  while (!Serial); // wait for serial port to connect. Needed for native USB
-#endif
-
-  if (! rtc.begin()) {
+  if (!rtc.begin()) {
     Serial.println("Couldn't find RTC");
     Serial.flush();
     while (1) delay(10);
@@ -29,7 +25,7 @@ void setup () {
   printTime();
   Serial.println("Send Unix timestamp to set RTC time (seconds since 1970-01-01 00:00:00 UTC)");
   Serial.println("Find the unix timestamp at https://www.unixtimestamp.com/");
-  Serial.println("Example: 1694563200 (2023-09-13 00:00:00 UTC)");
+  Serial.println("Example: 1747540800 (2025-05-18 00:00:00 UTC)");
 }
 
 void loop () {
@@ -48,7 +44,7 @@ void loop () {
     if (inputString.length() > 0) {
       // Try to convert input to a Unix timestamp
       uint32_t newTime = inputString.toInt();
-      if (newTime > 1600000000) { // Basic sanity check (time after 2020-09-13)
+      if (newTime > 1700000000) { // Basic sanity check (time after 2023-11-14)
         // Set the RTC using the Unix timestamp
         rtc.adjust(DateTime(newTime));
         Serial.print("RTC time set to: ");
@@ -63,7 +59,7 @@ void loop () {
     stringComplete = false;
   }
 
-  // Display current time every second
+  // Print current time every second to the serial monitor
   static unsigned long lastPrintTime = 0;
   if (millis() - lastPrintTime >= 1000) {
     printTime();
@@ -71,6 +67,9 @@ void loop () {
   }
 }
 
+/**
+ * Prints the current time from the RTC to the serial monitor as a Unix timestamp.
+ */
 void printTime() {
   DateTime now = rtc.now();
 

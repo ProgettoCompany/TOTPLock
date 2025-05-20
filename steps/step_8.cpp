@@ -7,7 +7,6 @@
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 #include <OnePinKeypad.h>
-#include <EEPROM.h>
 
 // Define ST7789 display pin connection
 #define TFT_CS     10   
@@ -19,32 +18,24 @@
 #define KEYPAD_PIN A0
 #define NO_KEY '\0'
 
-#define SOLENOID_PIN 3 // Pin for the solenoid lock
-
-// EEPROM Storage definitions for storing timezone offset
-#define EEPROM_MAGIC_MARKER "TOTP"  // 4-byte marker to verify EEPROM has been initialized
-#define EEPROM_MAGIC_ADDR 0         // Starting address for magic marker
-#define EEPROM_TZ_ADDR 4  
-
+// Initialize the ST7789 display
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 
 // Create a keypad object
 OnePinKeypad keypad(KEYPAD_PIN);
 
-// Calibrated thresholds for the keypad
-int myThresholds[16] = {6, 84, 152, 207, 252, 297, 337, 373, 400, 430, 457, 482, 501, 522, 542, 560};
-
 RTC_DS3231 rtc;
 
 // The shared secret is shTGPxibDo (feel free to change it using https://www.lucadentella.it/OTP/)
-uint8_t hmacKey[] = {0x73, 0x68, 0x54, 0x47, 0x50, 0x78, 0x69, 0x62, 0x44, 0x6f, 0x63, 0x33, 0x51, 0x39, 0x54, 0x36};
+uint8_t hmacKey[] = {0x73, 0x68, 0x54, 0x47, 0x50, 0x78, 0x69, 0x62, 0x44, 0x6f};
+
+// Calibrated thresholds for the keypad
+int myThresholds[16] = {6, 84, 152, 207, 252, 297, 337, 373, 400, 430, 457, 482, 501, 522, 542, 560};
 
 TOTP totp = TOTP(hmacKey, 10);
 
-// Variables to keep track of the last time displayed
-// This is used to avoid redrawing the the time if it hasn't changed 
-int lastHourDisplayed = -1;
-int lastMinuteDisplayed = -1;
+int lastHourDisplayed = -1; // Last hour displayed
+int lastMinuteDisplayed = -1; // Last minute displayed
 
 // Variables for user code entry
 char enteredCode[7] = ""; // Buffer for entered code (6 digits + null terminator)
@@ -53,10 +44,6 @@ bool codeVerified = false; // Whether the code has been verified
 unsigned long codeEntryStartTime = 0; // When the user started entering a code
 const unsigned long CODE_ENTRY_TIMEOUT = 10000; // 10 seconds to enter code
 unsigned long lastTimeUpdate = 0; // For tracking time updates
-
-// Timezone configuration
-int8_t timezoneOffset = 0; // Timezone offset in half-hours
-bool inTimezoneSetup = false; // Whether we're currently in timezone setup mode
 
 // Function prototypes
 void displayDefaultScreen();
@@ -69,26 +56,9 @@ void displayVerificationResult(bool success);
 void displayTime();
 void printTextCentered(char* text, int y, uint8_t textSize, uint16_t color);
 void printTextCentered(const __FlashStringHelper* text, int y, uint8_t textSize, uint16_t color);
-void enterTimezoneSetup();
-void handleTimezoneInput(char keyValue);
-void saveTimezoneToEEPROM();
-void loadTimezoneFromEEPROM();
-void initializeEEPROM();
-bool isEEPROMInitialized();
-void displayTimezoneSetup();
 
 void setup() {
   Serial.begin(115200);
-  pinMode(SOLENOID_PIN, OUTPUT);
-  digitalWrite(SOLENOID_PIN, LOW); // Ensure solenoid is off at startup
-
-  // Initialize EEPROM and load timezone if available
-  if (!isEEPROMInitialized()) {
-    Serial.println(F("Initializing EEPROM"));
-    initializeEEPROM();
-  } else {
-    loadTimezoneFromEEPROM();
-  }
 
   if (!rtc.begin()) {
     Serial.println(F("Couldn't find RTC"));
@@ -113,71 +83,51 @@ void setup() {
 }
 
 void loop() {
-  if (inTimezoneSetup) {
-    // In timezone setup mode
-    char keyValue = keypad.readKeypadWithTimeout(50);
-    if (keyValue != NO_KEY) {
-      handleTimezoneInput(keyValue);
-    }
-  } else {
-    if (!codeVerified) {
-      displayTime();
-      handleKeypadInput();
-    }
-    
-    unsigned long currentMillis = millis();
-    // Check for timeout during code entry
-    if (codeIndex > 0 && currentMillis - codeEntryStartTime > CODE_ENTRY_TIMEOUT) {
-      // Reset code entry due to timeout
-      codeIndex = 0;
-      enteredCode[0] = '\0';
-      tft.fillScreen(ST77XX_BLACK);
-      displayDefaultScreen();
-    }
-    
-    // Reset verification status after 3 seconds (go back to locked state)
-    if (codeVerified && currentMillis - codeEntryStartTime > 3000) {
-      Serial.println(F("Resetting verification status..."));
-      codeVerified = false;
-      digitalWrite(SOLENOID_PIN, LOW); // Deactivate solenoid lock
-      tft.fillScreen(ST77XX_BLACK);
-      displayDefaultScreen();
-    }
+  if (!codeVerified) {
+    displayTime();
+    handleKeypadInput();
   }
-  delay(10);
+  
+  unsigned long currentMillis = millis();
+  // Check for timeout during code entry
+  if (codeIndex > 0 && currentMillis - codeEntryStartTime > CODE_ENTRY_TIMEOUT) {
+    // Reset code entry due to timeout
+    codeIndex = 0;
+    enteredCode[0] = '\0';
+    tft.fillScreen(ST77XX_BLACK);
+    displayDefaultScreen();
+  }
+  
+  // Reset verification status after 3 seconds (go back to locked state)
+  if (codeVerified && currentMillis - codeEntryStartTime > 3000) {
+    Serial.println(F("Resetting verification status..."));
+    codeVerified = false;
+    tft.fillScreen(ST77XX_BLACK);
+    displayDefaultScreen();
+  }
 }
 
 /**
  * Display the current time
  * This function retrieves the current time from the RTC and formats it for display.
- * It also applies the timezone offset to adjust the time accordingly.
  */
 void displayTime() {
-  // Apply timezone offset (stored in half-hours) converted to seconds
-  long secondsOffset = timezoneOffset * 30 * 60; // half-hours to seconds
-  
-  // Apply the offset to the timestamp and create a new DateTime
-  TimeSpan offset(secondsOffset);
-  DateTime adjusted = rtc.now() + offset;
-  
-  // Extract the adjusted time components
-  int adjustedHour = adjusted.hour();
-  int adjustedMinute = adjusted.minute();
+  DateTime now = rtc.now();
   
   // Format time as 00:00PM
-  int hour12 = adjustedHour % 12;
+  int hour12 = now.hour() % 12;
   if (hour12 == 0) hour12 = 12;  // Adjust for 12 AM/PM
 
-  if (adjustedHour != lastHourDisplayed || adjustedMinute != lastMinuteDisplayed) {
-    lastHourDisplayed = adjustedHour;
-    lastMinuteDisplayed = adjustedMinute;
+  if (now.hour() != lastHourDisplayed || now.minute() != lastMinuteDisplayed) {
+    lastHourDisplayed = now.hour();
+    lastMinuteDisplayed = now.minute();
     
     // Update time display
     char timeStr[9]; // Buffer for time string (format: 00:00PM\0)
     sprintf(timeStr, "%d:%02d%s", 
             hour12, 
-            adjustedMinute, 
-            adjustedHour >= 12 ? "PM" : "AM");
+            now.minute(), 
+            now.hour() >= 12 ? "PM" : "AM");
     
     // Update just the time portion without redrawing the entire screen
     tft.fillRect(80, 10, 140, 20, ST77XX_BLACK); // Clear time area
@@ -218,12 +168,6 @@ void handleKeypadInput() {
   Serial.print(F("Key pressed: "));
   Serial.println(keyValue);
   
-  // Check for 'A' key for timezone setup
-  if (keyValue == 'A') {
-    enterTimezoneSetup();
-    return;
-  }
-  
   // Start tracking time for the first key press
   if (codeIndex == 0) {
     codeEntryStartTime = millis();
@@ -250,7 +194,7 @@ void handleKeypadInput() {
 /**
  * Verify the entered code
  * This function checks if the entered code matches the current TOTP code.
- * If it matches, access is granted and the solenoid lock is activated.
+ * If it matches, access is granted.
  */
 void verifyCode() {
   // Get current TOTP code
@@ -304,14 +248,12 @@ void displayCodeEntry() {
     tft.print("_");
   }
   
-  printTextCentered(F("Press * to clear"), 180, 2, ST77XX_GREEN);
-  printTextCentered(F("A = Set Timezone"), 200, 2, ST77XX_YELLOW);
+  printTextCentered(F("Press * to clear"), 200, 2, ST77XX_GREEN);
 }
 
 /**
  * Display the verification result
  * This function shows whether the access was granted or denied.
- * It also activates the solenoid lock if access is granted.
  * @param success True if access is granted, false if denied
  */
 void displayVerificationResult(bool success) {
@@ -320,138 +262,10 @@ void displayVerificationResult(bool success) {
   if (success) {
     printTextCentered(F("ACCESS"), 100, 3, ST77XX_GREEN);
     printTextCentered(F("GRANTED"), 130, 3, ST77XX_GREEN);
-    digitalWrite(SOLENOID_PIN, HIGH); // Activate solenoid lock
   } else {
     printTextCentered(F("ACCESS"), 100, 3, ST77XX_RED);
     printTextCentered(F("DENIED"), 130, 3, ST77XX_RED);
   }
-}
-
-/**
- * Enter timezone setup mode
- * This function is called when the user presses the 'A' key.
- */
-void enterTimezoneSetup() {
-  inTimezoneSetup = true;
-  displayTimezoneSetup();
-}
-
-/**
- * Display the timezone setup screen
- * This function shows the current timezone and allows the user to adjust it.
- * The user can increase or decrease the timezone offset by 30 minutes using
- * the keypad. The user can also save the changes and exit the setup.
- */
-void displayTimezoneSetup() {
-  tft.fillScreen(ST77XX_BLACK);
-  
-  printTextCentered(F("TIMEZONE SETUP"), 20, 2, ST77XX_CYAN);
-  
-  // Show current timezone
-  char currentTZ[9];
-  
-  float tzFloat = timezoneOffset / 2.0;
-  if (tzFloat == 0.0) {
-    sprintf(currentTZ, "UTC");
-  } else {
-    char tempTZ[6]; // Buffer to store the offset value
-    dtostrf(tzFloat, 2, (timezoneOffset % 2 == 0) ? 0 : 1, tempTZ);
-    if (tzFloat > 0) {
-      sprintf(currentTZ, "UTC+%s", tempTZ);
-    } else {
-      sprintf(currentTZ, "UTC%s", tempTZ);
-    }
-  }
-  
-  // Display current timezone in large font
-  printTextCentered(currentTZ, 100, 3, ST77XX_WHITE);
-  
-  // Display instructions
-  printTextCentered(F("B: +30min"), 160, 2, ST77XX_GREEN);
-  printTextCentered(F("C: -30min"), 180, 2, ST77XX_RED);
-  printTextCentered(F("D: Save & Exit"), 200, 2, ST77XX_YELLOW);
-}
-
-/**
- * Handle timezone input from keypad
- * @param keyValue The key pressed
- */
-void handleTimezoneInput(char keyValue) {
-  if (keyValue == 'D') {
-    // Save and exit timezone setup
-    saveTimezoneToEEPROM();
-    inTimezoneSetup = false;
-    tft.fillScreen(ST77XX_BLACK);
-    displayDefaultScreen();
-    return;
-  }
-  
-  if (keyValue == 'B') {
-    Serial.println(F("Increasing timezone offset"));
-    // Increase timezone offset by 30 minutes (1 half-hour)
-    timezoneOffset++;
-    // Limit to reasonable range (UTC+14)
-    if (timezoneOffset > 28) timezoneOffset = 28;
-    displayTimezoneSetup();
-  }
-  else if (keyValue == 'C') {
-    Serial.println(F("Decreasing timezone offset"));
-    // Decrease timezone offset by 30 minutes (1 half-hour)
-    timezoneOffset--;
-    // Limit to reasonable range (UTC-12)
-    if (timezoneOffset < -24) timezoneOffset = -24;
-    displayTimezoneSetup();
-  }
-}
-
-/**
- * Check if EEPROM is initialized with the magic marker
- * @return true if EEPROM is initialized, false otherwise
- */
-bool isEEPROMInitialized() {
-  for (int i = 0; i < 4; i++) {
-    if (EEPROM.read(EEPROM_MAGIC_ADDR + i) != EEPROM_MAGIC_MARKER[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
- * Initialize EEPROM with a magic marker and default timezone
- */
-void initializeEEPROM() {
-  // Write the magic marker
-  for (int i = 0; i < 4; i++) {
-    EEPROM.write(EEPROM_MAGIC_ADDR + i, EEPROM_MAGIC_MARKER[i]);
-  }
-  
-  // Set default timezone to UTC+0
-  EEPROM.write(EEPROM_TZ_ADDR, 0);
-  timezoneOffset = 0;
-}
-
-/**
- * Load the timezone offset from EEPROM
- */
-void loadTimezoneFromEEPROM() {
-  // Read timezone value (as signed byte)
-  timezoneOffset = (int8_t)EEPROM.read(EEPROM_TZ_ADDR);
-  
-  Serial.print(F("Loaded timezone offset: "));
-  Serial.print(timezoneOffset / 2.0);
-  Serial.println(F(" hours"));
-}
-
-/**
- * Save the timezone offset to EEPROM
- */
-void saveTimezoneToEEPROM() {
-  EEPROM.write(EEPROM_TZ_ADDR, (uint8_t)timezoneOffset);
-  
-  Serial.print(F("Saved timezone offset: "));
-  Serial.print(timezoneOffset / 2.0);
-  Serial.println(F(" hours"));
 }
 
 /**

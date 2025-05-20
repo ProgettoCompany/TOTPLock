@@ -28,8 +28,8 @@ OnePinKeypad keypad(KEYPAD_PIN);
 
 RTC_DS3231 rtc;
 
-// The shared secret is MyLegoDoor
-uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
+// The shared secret is shTGPxibDo (feel free to change it using https://www.lucadentella.it/OTP/)
+uint8_t hmacKey[] = {0x73, 0x68, 0x54, 0x47, 0x50, 0x78, 0x69, 0x62, 0x44, 0x6f};
 
 // Calibrated thresholds for the keypad
 int myThresholds[16] = {6, 84, 152, 207, 252, 297, 337, 373, 400, 430, 457, 482, 501, 522, 542, 560};
@@ -50,7 +50,7 @@ unsigned long lastTimeUpdate = 0; // For tracking time updates
 // Function prototypes
 void displayDefaultScreen();
 void displayTOTPQRCode();
-void base32_encode(const uint8_t* data, int dataLength, char* result, int bufSize);
+void base32Encode(const uint8_t* data, int dataLength, char* result, int bufSize);
 void handleKeypadInput();
 void verifyCode();
 void displayCodeEntry();
@@ -102,7 +102,7 @@ void loop() {
     displayDefaultScreen();
   }
   
-  // Reset verification status after 3 seconds
+  // Reset verification status after 3 seconds (go back to locked state)
   if (codeVerified && currentMillis - codeEntryStartTime > 3000) {
     Serial.println(F("Resetting verification status..."));
     codeVerified = false;
@@ -112,6 +112,10 @@ void loop() {
   }
 }
 
+/**
+ * Display the current time
+ * This function retrieves the current time from the RTC and formats it for display.
+ */
 void displayTime() {
   DateTime now = rtc.now();
   
@@ -136,6 +140,13 @@ void displayTime() {
   }
 }
 
+/**
+ * Display Default Screen
+ * This function clears the screen and and shows the current time.
+ * It also displays the code entry prompt. The last displayed hour
+ * and minute are reset to ensure the time is updated correctly. This
+ * function is called at startup and after code verification.
+ */
 void displayDefaultScreen() {
   tft.fillScreen(ST77XX_BLACK);
   
@@ -146,6 +157,10 @@ void displayDefaultScreen() {
   displayCodeEntry();
 }
 
+/**
+ * Handle keypad input
+ * This function reads the keypad and processes the input.
+ */
 void handleKeypadInput() {
   char keyValue = keypad.readKeypadWithTimeout(50);
   
@@ -181,6 +196,11 @@ void handleKeypadInput() {
     }
 }
 
+/**
+ * Verify the entered code
+ * This function checks if the entered code matches the current TOTP code.
+ * If it matches, access is granted and the solenoid lock is activated.
+ */
 void verifyCode() {
   // Get current TOTP code
   DateTime now = rtc.now();
@@ -207,6 +227,12 @@ void verifyCode() {
   codeEntryStartTime = millis();
 }
 
+/**
+ * Display the code entry screen
+ * This function shows the user the code they are entering.
+ * It also provides instructions for clearing the entry
+ * and setting the timezone.
+ */
 void displayCodeEntry() {
   tft.fillRect(0, 120, 200, 160, ST77XX_BLACK);
   
@@ -230,6 +256,12 @@ void displayCodeEntry() {
   printTextCentered(F("Press * to clear"), 200, 2, ST77XX_GREEN);
 }
 
+/**
+ * Display the verification result
+ * This function shows whether the access was granted or denied.
+ * It also activates the solenoid lock if access is granted.
+ * @param success True if access is granted, false if denied
+ */
 void displayVerificationResult(bool success) {
   tft.fillScreen(ST77XX_BLACK);
   
@@ -243,6 +275,9 @@ void displayVerificationResult(bool success) {
   }
 }
 
+/**
+ * Display the TOTP QR code on the TFT screen
+ */
 void displayTOTPQRCode() {
   QRCode qrcode;
   
@@ -253,7 +288,7 @@ void displayTOTPQRCode() {
   // Create TOTP URI for Google Authenticator
   // Format: otpauth://totp/Label:User?secret=SECRET&issuer=Issuer
   char secret[20];
-  base32_encode(hmacKey, 10, secret, 20); // Convert HMAC to Base32 for the URI
+  base32Encode(hmacKey, 10, secret, 20); // Convert HMAC to Base32 for the URI
   
   char uri[100];
   sprintf(uri, "otpauth://totp/Door:Lock?secret=%s&issuer=TOTPLock", secret);
@@ -281,8 +316,14 @@ void displayTOTPQRCode() {
   printTextCentered(F("Scan with Auth App"), 20, 2, ST77XX_CYAN);
 }
 
-// Base32 encoding function for TOTP secret
-void base32_encode(const uint8_t* data, int dataLength, char* result, int bufSize) {
+/**
+ * Base32 encoding function for TOTP secret
+ * @param data The data to encode
+ * @param dataLength The length of the data
+ * @param result The buffer to store the encoded result
+ * @param bufSize The size of the result buffer
+ */
+void base32Encode(const uint8_t* data, int dataLength, char* result, int bufSize) {
 
   const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   int resultIndex = 0;
@@ -310,7 +351,13 @@ void base32_encode(const uint8_t* data, int dataLength, char* result, int bufSiz
   result[resultIndex] = 0;
 }
 
-
+/**
+ * Print text centered on the TFT screen
+ * @param text The text to print
+ * @param y The y-coordinate for the text
+ * @param textSize The size of the text
+ * @param color The color of the text
+ */
 void printTextCentered(char* text, int y, uint8_t textSize, uint16_t color) {
   // Calculate text width (each character in default font is 6 pixels wide at size 1)
   int textWidth = strlen(text) * 6 * textSize;
@@ -322,6 +369,13 @@ void printTextCentered(char* text, int y, uint8_t textSize, uint16_t color) {
   tft.println(text);
 }
 
+/**
+ * Print text centered on the TFT screen
+ * @param text The text to print (can be a flash string)
+ * @param y The y-coordinate for the text
+ * @param textSize The size of the text
+ * @param color The color of the text
+ */
 void printTextCentered(const __FlashStringHelper* text, int y, uint8_t textSize, uint16_t color) {
   // Flash strings need to be handled differently
   PGM_P p = reinterpret_cast<PGM_P>(text);
