@@ -2,7 +2,7 @@
 
 A TOTP-based physical access control system using an Arduino-compatible microcontroller, TFT display, solenoid lock, RTC, and analog keypad. Users authenticate by entering a 6-digit TOTP generated from a shared secret, compatible with apps like Google Authenticator.
 
-**Build one yourself by following the [Instructables](https://github.com/ProgettoCompany/Progetto_One_Pin_Keypad_Arduino_Library)!
+**Build one yourself by following the [Instructables](https://github.com/ProgettoCompany/Progetto_One_Pin_Keypad_Arduino_Library)!**
 
 ## Features
 
